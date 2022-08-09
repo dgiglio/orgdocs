@@ -1,0 +1,291 @@
+			HOW TO SET UP AND CONFIGURE AN OPENVPN SERVER
+* Introduction
+  Want to access the Internet safely and securely from your smartphone
+  or laptop when connected to an untrusted network such as the WiFi of
+  a hotel or coffee shop? A Virtual Private Network (VPN) allows you
+  to traverse untrusted networks privately and securely as if you were
+  on a private network. The traffic emerges from the VPN server and
+  continues its journey to the destination.
+
+  When combined with HTTPS connections, this setup allows you to
+  secure your wireless logins and transactions. You can circumvent
+  geographical restrictions and censorship, and shield your location
+  and any unencrypted HTTP traffic from the untrusted network.
+
+  OpenVPN is a full-featured, open-source Secure Socket Layer (SSL)
+  VPN solution that accommodates a wide range of configurations. In
+  this tutorial, you will set up an OpenVPN server on a Debian 10
+  server and then configure access to it from Windows, macOS, iOS
+  and/or Android. This tutorial will keep the installation and
+  configuration steps as simple as possible for each of these setups.
+
+* Prerequisites
+  To complete this tutorial, you will need access to a Debian 10
+  server to host your OpenVPN service. You will need to configure a
+  non-root user with sudo privileges before you start this guide. You
+  can follow our Debian 10 initial server setup guide to set up a
+  user with appropriate permissions. The linked tutorial will also
+  set up a firewall, which is assumed to be in place throughout this
+  guide.
+
+  Additionally, you will need a separate machine to serve as your
+  certificate authority (CA). While it’s technically possible to use
+  your OpenVPN server or your local machine as your CA, this is not
+  recommended as it opens up your VPN to some security
+  vulnerabilities. Per the official OpenVPN documentation, you should
+  place your CA on a standalone machine that’s dedicated to importing
+  and signing certificate requests. For this reason, this guide
+  assumes that your CA is on a separate Debian 10 server that also
+  has a non-root user with sudo privileges and a basic firewall.
+
+  Please note that if you disable password authentication while
+  configuring these servers, you may run into difficulties when
+  transferring files between them later on in this guide. To resolve
+  this issue, you could re-enable password authentication on each
+  server. Alternatively, you could generate an SSH keypair for each
+  server, then add the OpenVPN server’s public SSH key to the CA
+  machine’s authorized_keys file and vice versa. See How to Set Up
+  SSH Keys on Debian 10 for instructions on how to perform either of
+  these solutions.
+
+  When you have these prerequisites in place, you can move on to Step
+  1 of this tutorial.
+
+
+* Step 1 — Installing OpenVPN and EasyRSA
+  To start off, update your VPN server’s package index and install
+  OpenVPN. OpenVPN is available in Debian’s default repositories, so
+  you can use apt for the installation:
+
+  #+begin_src shell
+  $ sudo apt update
+  $ sudo apt install openvpn
+  #+end_src
+
+  OpenVPN is a TLS/SSL VPN. This means that it utilizes certificates
+  in order to encrypt traffic between the server and clients. To issue
+  trusted certificates, you will set up your own simple certificate
+  authority (CA). To do this, we will download the latest version of
+  EasyRSA, which we will use to build our CA public key infrastructure
+  (PKI), from the project’s official GitHub repository.
+
+  As mentioned in the prerequisites, we will build the CA on a
+  standalone server. The reason for this approach is that, if an
+  attacker were able to infiltrate your server, they would be able to
+  access your CA private key and use it to sign new certificates,
+  giving them access to your VPN. Accordingly, managing the CA from a
+  standalone machine helps to prevent unauthorized users from
+  accessing your VPN. Note, as well, that it’s recommended that you
+  keep the CA server turned off when not being used to sign keys as a
+  further precautionary measure.
+
+  To begin building the CA and PKI infrastructure, use wget to
+  download the latest version of EasyRSA on both your CA machine and
+  your OpenVPN server. To get the latest version, go to the [[https://github.com/OpenVPN/easy-rsa/releases][Releases
+  page on the official EasyRSA GitHub project]], copy the download link
+  for the file ending in .tgz, and then paste it into the following
+  command:
+
+  #+begin_src shell
+  wget -P ~/ https://github.com/OpenVPN/easy-rsa/releases/download/v3.0.6/EasyRSA-unix-v3.0.6.tgz
+  #+end_src
+
+  Then extract the tarball:
+
+  #+begin_src shell
+  cd ~
+  tar xvf EasyRSA-unix-v3.0.6.tgz
+  #+end_src
+
+  You have successfully installed all the required software on your
+  server and CA machine. Continue on to configure the variables used
+  by EasyRSA and to set up a CA directory, from which you will
+  generate the keys and certificates needed for your server and
+  clients to access the VPN.
+
+* Step 2 — Configuring the EasyRSA Variables and Building the CA
+  EasyRSA comes installed with a configuration file which you can edit
+  to define a number of variables for your CA.
+
+  On your CA machine, navigate to the EasyRSA directory:
+
+  #+begin_src shell
+  cd ~/EasyRSA-v3.0.6/
+  #+end_src
+
+  Inside this directory is a file named vars.example. Make a copy of
+  this file, and name the copy vars without a file extension:
+
+  #+begin_src shell
+  cp vars.example vars
+  #+end_src
+
+  Open this new file using your preferred text editor:
+
+  #+begin_src shell
+  nano vars
+  #+end_src
+
+  Find the settings that set field defaults for new certificates. It
+  will look something like this:
+
+  ~/EasyRSA-v3.0.6/vars
+
+  #+begin_example
+  . . .
+
+  #set_var EASYRSA_REQ_COUNTRY    "US"
+  #set_var EASYRSA_REQ_PROVINCE   "California"
+  #set_var EASYRSA_REQ_CITY       "San Francisco"
+  #set_var EASYRSA_REQ_ORG        "Copyleft Certificate Co"
+  #set_var EASYRSA_REQ_EMAIL      "me@example.net"
+  #set_var EASYRSA_REQ_OU         "My Organizational Unit"
+
+  . . .
+  #+end_example
+
+  Uncomment these lines and update the highlighted values to whatever
+  you’d prefer, but do not leave them blank:
+
+  #+begin_example
+  ~/EasyRSA-v3.0.6/vars
+  . . .
+
+  set_var EASYRSA_REQ_COUNTRY    "US"
+  set_var EASYRSA_REQ_PROVINCE   "NewYork"
+  set_var EASYRSA_REQ_CITY       "New York City"
+  set_var EASYRSA_REQ_ORG        "DigitalOcean"
+  set_var EASYRSA_REQ_EMAIL      "admin@example.com"
+  set_var EASYRSA_REQ_OU         "Community"
+
+  . . .
+  #+end_example
+
+  When you are finished, save and close the file.
+
+  Within the EasyRSA directory is a script called easyrsa which is
+  called to perform a variety of tasks involved with building and
+  managing the CA. Run this script with the init-pki option to
+  initiate the public key infrastructure on the CA server:
+
+  ./easyrsa init-pki
+  Output
+  . . .
+
+  init-pki complete; you may now create a CA or requests.
+  Your newly created PKI dir is: /home/sammy/EasyRSA-v3.0.6/pki
+  After this, call the easyrsa script again, following it with the build-ca option. This will build the CA and create two important files — ca.crt and ca.key — which make up the public and private sides of an SSL certificate.
+
+  ca.crt is the CA’s public certificate file which, in the context of OpenVPN, the server and the client use to inform one another that they are part of the same web of trust and not someone performing a man-in-the-middle attack. For this reason, your server and all of your clients will need a copy of the ca.crt file.
+  ca.key is the private key which the CA machine uses to sign keys and certificates for servers and clients. If an attacker gains access to your CA and, in turn, your ca.key file, they will be able to sign certificate requests and gain access to your VPN, impeding its security. This is why your ca.key file should only be on your CA machine and that, ideally, your CA machine should be kept offline when not signing certificate requests as an extra security measure.
+  If you don’t want to be prompted for a password every time you interact with your CA, you can run the build-ca command with the nopass option, like this:
+
+  ./easyrsa build-ca nopass
+  In the output, you’ll be asked to confirm the common name for your CA:
+
+  Output
+  . . .
+  Common Name (eg: your user, host, or server name) [Easy-RSA CA]:
+  The common name is the name used to refer to this machine in the context of the certificate authority. You can enter any string of characters for the CA’s common name but, for simplicity’s sake, press ENTER to accept the default name.
+
+  With that, your CA is in place and it’s ready to start signing certificate requests.
+
+
+* Step 3 — Creating the Server Certificate, Key, and Encryption Files
+Now that you have a CA ready to go, you can generate a private key and
+certificate request from your server and then transfer the request
+over to your CA to be signed, creating the required certificate.
+You’re also free to create some additional files used during the
+encryption process.
+
+Start by navigating to the EasyRSA directory on your OpenVPN server:
+
+#+begin_src shell
+cd EasyRSA-v3.0.6/
+#+end_src
+
+From there, run the easyrsa script with the ~init-pki~ option. Although
+you already ran this command on the CA machine, it’s necessary to run
+it here because your server and CA will have separate PKI directories:
+
+#+begin_src shell
+./easyrsa init-pki
+#+end_src
+
+Then call the easyrsa script again, this time with the gen-req option
+followed by a common name for the machine. Again, this could be
+anything you like but it can be helpful to make it something
+descriptive. Throughout this tutorial, the OpenVPN server’s common
+name will simply be “server”. Be sure to include the ~nopass~ option as
+well. Failing to do so will password-protect the request file which
+could lead to permissions issues later on:
+
+Note: If you choose a name other than “server” here, you will have to
+adjust some of the instructions below. For instance, when copying the
+generated files to the /etc/openvpn directory, you will have to
+substitute the correct names. You will also have to modify the
+/etc/openvpn/server.conf file later to point to the correct .crt and
+.key files.
+
+#+begin_src shell
+./easyrsa gen-req server nopass
+#+end_src
+
+This will create a private key for the server and a certificate
+request file called server.req. Copy the server key to the
+/etc/openvpn/ directory:
+
+sudo cp ~/EasyRSA-v3.0.6/pki/private/server.key /etc/openvpn/
+Using a secure method (like SCP, in our example below), transfer the server.req file to your CA machine:
+
+scp ~/EasyRSA-v3.0.6/pki/reqs/server.req sammy@your_CA_ip:/tmp
+Next, on your CA machine, navigate to the EasyRSA directory:
+
+cd EasyRSA-v3.0.6/
+Using the easyrsa script again, import the server.req file, following the file path with its common name:
+
+./easyrsa import-req /tmp/server.req server
+Then sign the request by running the easyrsa script with the sign-req option, followed by the request type and the common name. The request type can either be client or server, so for the OpenVPN server’s certificate request, be sure to use the server request type:
+
+./easyrsa sign-req server server
+In the output, you’ll be asked to verify that the request comes from a trusted source. Type yes then press ENTER to confirm this:
+
+You are about to sign the following certificate.
+Please check over the details shown below for accuracy. Note that this request
+has not been cryptographically verified. Please be sure it came from a trusted
+source or that you have verified the request checksum with the sender.
+
+Request subject, to be signed as a server certificate for 1080 days:
+
+subject=
+    commonName                = server
+
+
+Type the word 'yes' to continue, or any other input to abort.
+  Confirm request details: yes
+If you encrypted your CA key, you’ll be prompted for your password at this point.
+
+Next, transfer the signed certificate back to your VPN server using a secure method:
+
+scp pki/issued/server.crt sammy@your_server_ip:/tmp
+Before logging out of your CA machine, transfer the ca.crt file to your server as well:
+
+scp pki/ca.crt sammy@your_server_ip:/tmp
+Next, log back into your OpenVPN server and copy the server.crt and ca.crt files into your /etc/openvpn/ directory:
+
+sudo cp /tmp/{server.crt,ca.crt} /etc/openvpn/
+Then navigate to your EasyRSA directory:
+
+cd EasyRSA-v3.0.6/
+From there, create a strong Diffie-Hellman key to use during key exchange by typing:
+
+./easyrsa gen-dh
+This may take a few minutes to complete. Once it does, generate an HMAC signature to strengthen the server’s TLS integrity verification capabilities:
+
+sudo openvpn --genkey --secret ta.key
+When the command finishes, copy the two new files to your /etc/openvpn/ directory:
+
+sudo cp ~/EasyRSA-v3.0.6/ta.key /etc/openvpn/
+sudo cp ~/EasyRSA-v3.0.6/pki/dh.pem /etc/openvpn/
+
+With that, all the certificate and key files needed by your server have been generated. You’re ready to create the corresponding certificates and keys which your client machine will use to access your OpenVPN server.
